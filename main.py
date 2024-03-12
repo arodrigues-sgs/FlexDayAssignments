@@ -1,58 +1,90 @@
-import gurobipy as gp
+import pulp as pl
 import pandas as pd
 
+RANKINGS_CSV_FILE_NAME = 'socials_rankings.csv'
+MAX_STUDENTS_PER_SESSION = 20
+NUMBER_OF_ROTATIONS = 3
 
 def main():
-    rankings = pd.read_csv('test.csv')
+    """
+    This script takes a csv file in the current directory that contains as headers: a student identifier (eg. name, id), names of sessions, and
+    data which are integer rankings of the named sessions. The input file name, enrolment cap per session, and number of rotations can be adjusted.
+    Note: A student is assumed to be required to enrol in exactly one session per rotation, and may not enrol in the same session in multiple rotations.
+    """
 
-    num_students, num_sessions = rankings.shape[0], rankings.shape[1] - 1
-                      
-    MAX_STUDENTS_PER_SESSION = 4
+    rankings = pd.read_csv(RANKINGS_CSV_FILE_NAME)
 
+    num_students, num_sessions = rankings.shape[0], rankings.shape[1] - 1 # first column is student identifer, not session
+    sessions = rankings.columns[1:]
+                          
     # Initialize the optimization model
-    model = gp.Model("FlexDayAssignment")
+    problem = pl.LpProblem("FlexDayAssignment", pl.LpMinimize)
 
     # Define assignment matrix
-    X = model.addVars(num_students, num_sessions, vtype=gp.GRB.BINARY, name="assignment_matrix")
+    # X[i, j, k] = 1 if student i is assigned to session j in rotation k, 0 otherwise
+    X = pl.LpVariable.dicts("X", ((i, j, k) for i in range(num_students) for j in range(num_sessions) for k in range(NUMBER_OF_ROTATIONS)), cat=pl.LpBinary)
     
     # Specify contsraints
 
-    # Each student attends exactly one session
+    # Each student attends exactly one session per rotation
     for i in range(num_students):
-        model.addConstr(X.sum(i, '*') == 1, name=f"one_session_per_student_{i}")
+        # all sessions available in all but last rotation
+        for k in range(NUMBER_OF_ROTATIONS - 1): 
+            problem += pl.lpSum(X[i, j, k] for j in range(num_sessions)) == 1, f"one_session_per_student_{i}_rotation_{k}"
+        # special case for the last rotation, where the last session is no longer available
+        problem += pl.lpSum(X[i, j, NUMBER_OF_ROTATIONS - 1] for j in range(num_sessions - 1)) == 1, f"one_session_per_student_{i}_rotation_{NUMBER_OF_ROTATIONS - 1}"
 
-    # Enrollment cap per session
+    # Each student may attend the same session no more than once over all conferences
+    for i in range(num_students):
+        for j in range(num_sessions):
+            problem += pl.lpSum(X[i, j, k] for k in range(NUMBER_OF_ROTATIONS)) <= 1, f"session_{j}_max_once_per_student_{i}"
+    # Enrollment cap per session for each rotation
     for j in range(num_sessions):
-        model.addConstr(X.sum('*', j) <= MAX_STUDENTS_PER_SESSION, name=f"cap_per_session_{j}")
-
+        for k in range(NUMBER_OF_ROTATIONS):
+            # special case - no enrolment in final session of final rotation
+            if j == num_sessions - 1 and k == NUMBER_OF_ROTATIONS - 1:
+                problem += pl.lpSum(X[i, j, k] for i in range(num_students)) <= 0, f"no_enrolment_in_session_{num_sessions - 1}"
+            # enrollment caps for all but last rotation
+            else:
+                problem += pl.lpSum(X[i, j, k] for i in range(num_students)) <= MAX_STUDENTS_PER_SESSION, f"cap_per_session_{j}_rotation_{k}"
+    
+    # Create list of lists of int rankings from input data
     R = rankings.iloc[:, 1:].to_numpy().tolist()
 
-    objective = gp.quicksum((R[i][j] - 1)**2 * X[i, j] for i in range(num_students) for j in range(num_sessions))
-
-    model.setObjective(objective, gp.GRB.MINIMIZE)
-
-    model.optimize()
-
-    assignments = [(i, j) for i in range(num_students) for j in range(num_sessions) if X[i, j].X > 0.5]
-    assignments.sort()
-    print("Assignments:", assignments)
-
-    sessions = rankings.columns[1:]
-
-    session_enrolments = {j: [] for j in range(num_sessions)}
-
-    for (i, j), x_ij in X.items():
-        if int(x_ij.X):
-            session_enrolments[j].append(rankings.iloc[i,0])
+    # Set the objective
+    objective = pl.lpSum((R[i][j] - 1) * X[i, j, k] for i in range(num_students) for j in range(num_sessions) for k in range(NUMBER_OF_ROTATIONS))
+    problem += objective
     
-    # append nones so we can make the output dataframe
-    max_length = max(len(lst) for lst in session_enrolments.values())
-    for j in session_enrolments:
-        session_enrolments[j] += [None] * (max_length - len(session_enrolments[j]))
+    problem.solve()
 
-    assignments_df = pd.DataFrame(session_enrolments)
-    assignments_df.columns = sessions
-    assignments_df.to_csv('output.csv', index=False)
+    # cataloguing for output
+    session_enrolments = {k: {j: [] for j in range(num_sessions)} for k in range(NUMBER_OF_ROTATIONS)}
+    # for testing
+    rankings_of_assigned_sessions_by_student = {i: [] for i in range(num_students)}
+
+    # parse solution variables
+    for v in problem.variables():
+        i, j, k = map(lambda x: int(x.replace('_', '')), v.name.split('(')[1].split(')')[0].split(','))
+        x_ijk = v.value()
+        if int(x_ijk) == 1:
+            session_enrolments[k][j].append(rankings.iloc[i,0])
+            rankings_of_assigned_sessions_by_student[i].append(R[i][j])
+
+
+    # append nones so we can make the output dataframe
+    max_length = max(len(lst) for lst in [session_enrolments[k][j] for j in range(num_sessions) for k in range(NUMBER_OF_ROTATIONS)])
+
+    for k in session_enrolments:
+        for j in session_enrolments[k]:
+            session_enrolments[k][j] += [None] * (max_length - len(session_enrolments[k][j]))
+
+    # create an output csv file for each rotation
+    for k in range(NUMBER_OF_ROTATIONS):
+        pd.DataFrame.from_dict(session_enrolments[k]).set_axis(sessions, axis='columns').to_csv(f"enrolments_for_rotation_{k}.csv", index=False)
+
+    # check to see what students ranked their assigned sessions (measure for how well we did)
+    for i, vals in rankings_of_assigned_sessions_by_student.items():
+        print(rankings.iloc[i,0] + ":", vals)
 
 
 if __name__ == '__main__':
