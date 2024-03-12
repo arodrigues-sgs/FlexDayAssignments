@@ -3,12 +3,12 @@ import pandas as pd
 
 
 def main():
-    rankings = pd.read_csv('test.csv')
+    rankings = pd.read_csv('socials_rankings.csv')
 
     num_students, num_sessions = rankings.shape[0], rankings.shape[1] - 1
     sessions = rankings.columns[1:]
                       
-    MAX_STUDENTS_PER_SESSION = 4
+    MAX_STUDENTS_PER_SESSION = 20
     NUMBER_OF_ROTATIONS = 3
 
     # Initialize the optimization model
@@ -21,8 +21,11 @@ def main():
 
     # Each student attends exactly one session per rotation
     for i in range(num_students):
-        for k in range(NUMBER_OF_ROTATIONS):
+        # all sessions available in all but last rotation
+        for k in range(NUMBER_OF_ROTATIONS - 1): 
             model.addConstr(sum(X[i, j, k] for j in range(num_sessions)) == 1, name=f"one_session_per_student_{i}_rotation_{k}")
+        # special case for the last rotation, where the last session is no longer available
+        model.addConstr(sum(X[i, j, NUMBER_OF_ROTATIONS - 1] for j in range(num_sessions - 1)) == 1, name=f"one_session_per_student_{i}_rotation_{NUMBER_OF_ROTATIONS - 1}")
 
     # Each student may attend the same session no more than once over all conferences
     for i in range(num_students):
@@ -32,12 +35,17 @@ def main():
     # Enrollment cap per session for each rotation
     for j in range(num_sessions):
         for k in range(NUMBER_OF_ROTATIONS):
-            model.addConstr(sum(X[i, j, k] for i in range(num_students)) <= MAX_STUDENTS_PER_SESSION, name=f"cap_per_session_{j}_rotation_{k}")
-
+            # special case - no enrolment in final session of final rotation
+            if j == num_sessions - 1 and k == NUMBER_OF_ROTATIONS - 1:
+                model.addConstr(sum(X[i, j, k] for i in range(num_students)) <= 0)
+            # enrollment caps for all but last rotation
+            else:
+                model.addConstr(sum(X[i, j, k] for i in range(num_students)) <= MAX_STUDENTS_PER_SESSION, name=f"cap_per_session_{j}_rotation_{k}")
+        
     # Create list of lists of rankings data (int)
     R = rankings.iloc[:, 1:].to_numpy().tolist()
 
-    objective = gp.quicksum((R[i][j] - 1)**2 * X[i, j, k] for i in range(num_students) for j in range(num_sessions) for k in range(NUMBER_OF_ROTATIONS))
+    objective = gp.quicksum((R[i][j] - 1) * X[i, j, k] for i in range(num_students) for j in range(num_sessions) for k in range(NUMBER_OF_ROTATIONS))
 
     model.setObjective(objective, gp.GRB.MINIMIZE)
 
