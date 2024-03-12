@@ -29,10 +29,8 @@ def main():
     # Each student attends exactly one session per rotation
     for i in range(num_students):
         # all sessions available in all but last rotation
-        for k in range(NUMBER_OF_ROTATIONS - 1): 
+        for k in range(NUMBER_OF_ROTATIONS): 
             problem += pl.lpSum(X[i, j, k] for j in range(num_sessions)) == 1, f"one_session_per_student_{i}_rotation_{k}"
-        # special case for the last rotation, where the last session is no longer available
-        problem += pl.lpSum(X[i, j, NUMBER_OF_ROTATIONS - 1] for j in range(num_sessions - 1)) == 1, f"one_session_per_student_{i}_rotation_{NUMBER_OF_ROTATIONS - 1}"
 
     # Each student may attend the same session no more than once over all conferences
     for i in range(num_students):
@@ -41,12 +39,7 @@ def main():
     # Enrollment cap per session for each rotation
     for j in range(num_sessions):
         for k in range(NUMBER_OF_ROTATIONS):
-            # special case - no enrolment in final session of final rotation
-            if j == num_sessions - 1 and k == NUMBER_OF_ROTATIONS - 1:
-                problem += pl.lpSum(X[i, j, k] for i in range(num_students)) <= 0, f"no_enrolment_in_session_{num_sessions - 1}"
-            # enrollment caps for all but last rotation
-            else:
-                problem += pl.lpSum(X[i, j, k] for i in range(num_students)) <= MAX_STUDENTS_PER_SESSION, f"cap_per_session_{j}_rotation_{k}"
+            problem += pl.lpSum(X[i, j, k] for i in range(num_students)) <= MAX_STUDENTS_PER_SESSION, f"cap_per_session_{j}_rotation_{k}"
     
     # Create list of lists of int rankings from input data
     R = rankings.iloc[:, 1:].to_numpy().tolist()
