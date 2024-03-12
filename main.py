@@ -1,6 +1,6 @@
 import gurobipy as gp
-import random
 import pandas as pd
+
 
 def main():
     rankings = pd.read_csv('test.csv')
@@ -38,23 +38,21 @@ def main():
     print("Assignments:", assignments)
 
     sessions = rankings.columns[1:]
-    student_ids = rankings.iloc[:,0]
-    assign_df = pd.DataFrame(-1, index=student_ids, columns=sessions)
 
-    session_lists = {}
+    session_enrolments = {j: [] for j in range(num_sessions)}
 
     for (i, j), x_ij in X.items():
-        assign_df.iloc[i, j] = int(x_ij.X)
         if int(x_ij.X):
-            if sessions[j] not in session_lists.keys():
-                session_lists[sessions[j]] = [student_ids[i]]
-            else:
-                session_lists[sessions[j]].append(student_ids[i])
+            session_enrolments[j].append(rankings.iloc[i,0])
+    
+    # append nones so we can make the output dataframe
+    max_length = max(len(lst) for lst in session_enrolments.values())
+    for j in session_enrolments:
+        session_enrolments[j] += [None] * (max_length - len(session_enrolments[j]))
 
-    print(assign_df)
-
-    for (key, val) in session_lists.items():
-        print(key + ":", val)
+    assignments_df = pd.DataFrame(session_enrolments)
+    assignments_df.columns = sessions
+    assignments_df.to_csv('output.csv', index=False)
 
 
 if __name__ == '__main__':
